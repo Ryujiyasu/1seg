@@ -1,0 +1,105 @@
+<!-- wp:paragraph -->
+<p><a href="https://yasu-home.com/isdbt-1seg-decoded-to-video/">#4</a> の最後に、こう書いた。「次は WASM＋WebUSB でブラウザに載せて、<strong>『URLを開くとテレビが映る』</strong>ところまで持っていきたい。……が、それはまた別の話」。その別の話を、本当にやった回。<strong>Rustで書いた復調器①〜⑥を、まるごとブラウザの中で動かす</strong>。ドングルはWebUSBで直結。サーバも、ネイティブアプリも、GNU Radioも要らない。タブを開くだけで、生の地デジが映って、音が鳴る。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">復調器を、そのままブラウザへ ── WebAssembly</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>まず驚くほどあっさり通ったのがWASM化だった。#1〜#4で書いた <code>crates/isdbt-dsp</code> ── FFT(rustfft)、複素数(num-complex)、Viterbi、リードソロモン、そのすべてが <code>wasm32</code> にそのままコンパイルできる。復調器をライブラリの <code>StreamingDecoder</code> にまとめ、薄いラッパーを被せるだけ：</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>#[wasm_bindgen]
+impl WasmDecoder {
+    pub fn feed(&amp;mut self, iq: &amp;[u8]) -&gt; Vec&lt;u8&gt; {  // IQ(u8) を入れると MPEG-TS が出る
+        self.inner.feed(iq)
+    }
+}</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:paragraph -->
+<p><code>wasm-pack build --target web</code>。約250KBの <code>.wasm</code> が出る。Nodeで走らせると、ネイティブと<strong>1バイト違わず同じTSパケット</strong>が出た。②同期から⑥逆拡散まで、この250KBの中で全部起きている。ここは楽勝だった。難所は、その先だった。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">ドングルを、ブラウザから直に叩く ── WebUSB と、R828Dの罠</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>WebUSBは、ブラウザからUSBデバイスの制御転送・バルク転送を直接叩けるAPIだ。つまり <code>librtlsdr</code> 相当のRTL2832Uドライバを、<strong>JavaScriptで自分で書く</strong>。これが茨だった。最初の実機テスト、取れたIQは <code>std=0.2</code> ── ほぼ真っ平ら、信号ゼロ。チューナが同調していない。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>原因は二つ、どちらも「思い込み」だった。ひとつ目：私はチューナをR820T（I2Cアドレス0x34）だと決めてかかっていた。だが <strong>RTL-SDR Blog V4 のチューナは R828D、I2Cアドレスは0x74</strong>。0x34宛の読み書きは全部stallして当たり前だった。レジスタ0を読んで <code>0x69</code> が返ればチューナ確定 ── アドレスを走査して自動検出するようにした。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>ふたつ目：R820T/R828Dは<strong>ゼロIFではなく、3.57MHzの低IF＋実ADC</strong>で動く。デモッド側を <code>0xb1=0x1a</code>（ゼロIF無効）、<code>0x08=0x4d</code>（I側ADCのみ）、IF周波数の設定、スペクトル反転 ── と正しく組み、チューナのLOは <code>中心周波数＋3.57MHz</code> に。フィルタ校正やPLLのVCO探索まで、実績あるlibrtlsdr/rtlsdrjsに忠実に写した。すると：</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>std=0.2（真っ平ら）  →  std=42.8（健全な信号）
+→ 取得IQを自作復調器に通す → 復号率 100%</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:paragraph -->
+<p>ブラウザのAPIだけで叩いたドングルから、地上波ワンセグを捕まえて、自分の復調器で100%解けた。ここまでで半分。だが、まだ<strong>「録って→後で解く」</strong>だ。本当の壁は「実時間で、映す」だった。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">実時間の罠 ── オフライン検証は、何も保証していなかった</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>白状すると、ここまでの検証はすべて<strong>「IQをファイルに保存 → あとでオフラインで復号」</strong>だった。ファイルは落ち着いて処理できる。だが実時間のライブは、待ってくれない。ブラウザで「接続」を押した瞬間、抑え込んでいた問題が連鎖で噴き出した。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:list -->
+<ul class="wp-block-list"><li><strong>WASMがクラッシュ（<code>unreachable</code>）</strong>：同期できない弱電界だと、入力バッファが無限に伸びてWASMがメモリ枯渇→abort。ファイルは有限なので露見しなかった。→ 未ロック時はバッファを上限で抑える。</li><li><strong>NaNでパニック</strong>：ライブのノイズでパイロットがほぼ0の搬送波が出ると、等化 <code>Y/H</code> が Inf/NaN に。それがViterbiのメトリクスを汚し、最良状態を選ぶ <code>max_by</code> がNaNで落ちる。→ ソフト値を有限値にサニタイズ、比較もNaN安全に。</li><li><strong>サンプル欠落</strong>：重い同期計算がWebUSBの読み取りループをブロックする隙に、RTL2832のFIFOが溢れてサンプルが飛ぶ→OFDMの連続性が壊れて同期できない。→ <strong>転送を常時32本in-flight</strong>にする多重バッファ読みで、処理が一瞬止まってもFIFOを吸い出し続ける。</li></ul>
+<!-- /wp:list -->
+
+<!-- wp:paragraph -->
+<p>ここまで潰して、ようやく<strong>同期＋整列ロック</strong>。TSも出た。mpegts.jsは生TSをpush給餌できず、ブラウザのMSEは <code>video/mp2t</code> を受けないので、映像は <strong>WebCodecsのVideoDecoderで直接H.264をデコード</strong>してcanvasに描く方式にした（このワンセグ波は1つのPESに複数フレームを <strong>AUD=NALタイプ9</strong> 区切りで詰めるので、AU境界はPUSIでなくAUDで切る、という細かい罠つき）。そして ── <strong>映った。けれど、動かない。</strong></p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">「映ったのに動かない」の正体 ── Web Worker</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>絵は出る。でも1秒に1コマ程度で、ほぼ静止画。速度不足を疑って実測すると、意外な事実：<strong>WASMはネイティブ比たった1.26倍遅いだけ</strong>で、ロック後の定常状態は約1.3倍リアルタイム ── ちゃんと追いつく。犯人は生の速度ではなく、<strong>メインスレッドの飽和</strong>だった。WebUSB読み取り・WASM復調・WebCodecsデコード・canvas描画を全部1本のスレッドで殴り合わせていて、描画コールバックが割り込めなかったのだ。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>答えは <strong>Web Worker</strong>。メインスレッドは「WebUSBで読んで、生IQをワーカーへ0コピーで渡す」だけにする。重い復調・H.264/AACデコード・<strong>OffscreenCanvas</strong>への描画は、全部ワーカーの中で回す。さらに、ワーカー内でも同期処理が描画を食わないよう、処理を小分けにして合間にイベントループへ制御を返す。これで、メインは詰まらず、絵が実時間で動き出した。動きは、完璧になった。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">音を、途切れず、ズレなく ── WebCodecs と AudioWorklet</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>残るは音。ワンセグ音声は <strong>AAC-LC（ADTS形式、24kHz基底＋SBRで48kHz出力・ステレオ）</strong>。PID 0x152からADTSフレームを切り出し、<strong>WebCodecsのAudioDecoder</strong>に渡すとPCMが返る（ADTSはそのまま食える）。最初はチャンクごとに音源ノードを並べて鳴らしたが、<strong>プツプツ</strong>と切れた。境界クリックとアンダーランだ。そこで <strong>AudioWorkletのリングバッファ</strong>に替え、音声スレッド上でサンプル単位に連結して1本の連続ストリームとして出す。プツプツは消えた。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>次はA/Vのズレ。<strong>音が映像に追いつかない</strong>。理由は起動時のバックログにあった。ロックまでに数秒ぶんのIQが溜まる。映像は「最新の1コマだけ描く」ので早送りで一気に追いつくが、音声は全サンプルを等速で鳴らすしかなく、その差ぶん遅れる。直し方は<strong>「ロックできた瞬間、溜まったバックログを捨てて『今』から復号する」</strong>。ただし乱暴に捨てると整列が壊れる。そこで <strong>204シンボル（＝1 OFDMフレーム＝64 RSブロック＝エネルギー拡散PRBSのちょうど1周期、しかも 204÷4 の余りが0）</strong>単位で捨てる ── これで位相もPRBSリセットもバイト整列も全部保たれる。飛ばした先から復号しても、成功率は99.5%を保った。映像も音声も「今」から始まる。ズレは消えた。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">開くと、映る</h2>
+<!-- /wp:heading -->
+
+<!-- wp:image {"id":0,"sizeSlug":"large","linkDestination":"none"} -->
+<figure class="wp-block-image size-large"><img src="https://yasu-home.com/wp-content/uploads/2026/07/05-browser-live.png" alt="自作ワンセグ復調器のブラウザ版。画面上部に『ブラウザ版』のタイトルとWebUSB接続ボタン、下のcanvasに関西テレビの実放送（9:39の朝番組）が映っている" class="wp-image-0"/><figcaption class="wp-block-image__caption">これが、ブラウザのタブの中身。上は自作アプリのUI（<strong>「RTL-SDRに接続してライブ復号」</strong>ボタン）、下のcanvasに映っているのは <strong>WebUSB経由で受けた生の地デジ</strong>（関西テレビ・ch17）を、Rust製WASM復調器が解いてWebCodecsで描いた1コマ。サーバもアプリも無い。<strong>タブの中だけ</strong>で起きている。</figcaption></figure>
+<!-- /wp:image -->
+
+<!-- wp:paragraph -->
+<p><strong><a href="https://yasu-home.com/1seg/">https://yasu-home.com/1seg/</a></strong> ── Chrome/EdgeでこのURLを開き、RTL-SDRを挿して「接続」を押すと、数秒のロックのあと、canvasに生放送が映って、音が鳴る。手元にドングルが無くても、<code>rtl_sdr</code> の生IQファイルを選べば、その場でブラウザが復号して再生する。ソースは全部 <a href="https://github.com/Ryujiyasu/1seg">github.com/Ryujiyasu/1seg</a> に置いた。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>u8のIQバイト列が、OFDMのシンボルになり、QPSKの点になり、ビットになり、TSパケットになり、H.264とAACになって、人の顔と、時計と、テロップと、その声になる ── その全部が、いまブラウザのタブの中で、実時間で流れている。①RF入力→②同期→③等化→④TMCC・デインターリーブ→⑤Viterbi＋RS→⑥逆拡散→H.264/AAC再生。#0でRTL-SDRのドライバに躓いたところから始まって、ここまで来た。GNU Radioに頼らない現代のRust実装 ── 調べた限り誰もやっていなかったこの一台は、いまや<strong>URLひとつ</strong>になった。開けば、テレビが映る。それで、完成だ。</p>
+<!-- /wp:paragraph -->
