@@ -1,0 +1,79 @@
+<!-- wp:paragraph -->
+<p>最近 <strong>RTL-SDR Blog V4</strong> を買った。目的は地デジTVを観ることではなく、<strong>ワンセグ（ISDB-T 1セグ）の復調器を自分で書く</strong>こと。その第0歩として、まず母艦（Ubuntu 26.04）で V4 を動かすところまでをまとめる。ネットでよく言われる「V4は専用ドライバ必須」は、<strong>新しめのディストリでは半分ウソ</strong>だった ── という話から。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">なぜ「ワンセグ自作復調器」なのか</h2>
+<!-- /wp:heading -->
+
+<!-- wp:list -->
+<ul class="wp-block-list"><li><strong>フルセグ（12セグ・帯域 約5.6MHz）は1本では無理。</strong> RTL-SDR が一度に覗ける窓は約2.5MHz。アンテナをどれだけ良くしても、窓の狭さは解決しない。</li><li><strong>ワンセグ（中央の1セグ・約429kHz）なら窓に余裕で収まる。</strong> しかも無スクランブルなので、復調できればそのまま再生できる。</li><li>既存の <code>gr-isdbt</code> にワンセグ復調の実績はあるが、GNU Radio 3.7〜3.8＋SWIG 世代の“化石ビルド”で、いまの環境では素直に通らない。<strong>だったら自分で書く。</strong></li></ul>
+<!-- /wp:list -->
+
+<!-- wp:paragraph -->
+<p>──というのがこのシリーズ。記念すべき #0 は環境構築から。買ったのは <strong>RTL-SDR Blog V4（R828D チューナー + RTL2832U）</strong>。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:image {"id":189,"sizeSlug":"large","linkDestination":"none"} -->
+<figure class="wp-block-image size-large"><img src="https://yasu-home.com/wp-content/uploads/2026/06/IMG_1643-768x1024.jpg" alt="RTL-SDR Blog V4 本体。RTL2832U / R828D / TCXO / Bias-T / HF 対応の表記が見える" class="wp-image-189"/><figcaption class="wp-block-image__caption">買った RTL-SDR Blog V4。ラベルに <code>RTL2832U / R828D / TCXO / Bias-T / HF</code> が並ぶ。右の SMA にはアンテナ線を繋いでいる。</figcaption></figure>
+<!-- /wp:image -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">ハマりどころ1：「V4は専用ドライバが要る」は新しめのディストリなら気にしなくていい</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>ネットだと「V4は R828D なので <code>rtl-sdr-blog</code> の専用ドライバを入れろ、旧 osmocom ドライバだと動かない」とよく書かれている。半分本当で、半分はもう古い情報だ。試しに <strong>Ubuntu 26.04 の apt 版（<code>rtl-sdr 2.0.2</code>）をそのまま入れたら、V4 を正式認識して完動した</strong>。ソースビルドは不要だった。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>sudo apt-get install -y rtl-sdr libusb-1.0-0-dev</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">ハマりどころ2：カーネルの地デジ（DVB-T）ドライバがデバイスを横取りする</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>挿すと Linux カーネルが <code>dvb_usb_rtl28xxu</code>（＋ <code>rtl2832_sdr</code> など）でデバイスを掴んでしまい、SDR として開けない。<code>/etc/modprobe.d/</code> で blacklist して外す。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>echo -e "blacklist dvb_usb_rtl28xxu\nblacklist rtl2832_sdr" \
+  | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf
+sudo modprobe -r rtl2832_sdr dvb_usb_rtl28xxu</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:paragraph -->
+<p>再起動でも外れるが、<code>modprobe -r</code> でその場でアンロードできた。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">動作確認</h2>
+<!-- /wp:heading -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>$ rtl_test
+Found 1 device(s):
+  0:  RTLSDRBlog, Blog V4, SN: 00000001
+
+Using device 0: Generic RTL2832U OEM
+Found Rafael Micro R828D tuner
+RTL-SDR Blog V4 Detected
+Supported gain values (29): 0.0 0.9 1.4 2.7 ... 44.5 48.0 49.6
+Sampling at 2048000 S/s.
+...
+Samples per million lost (minimum): 0</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:paragraph -->
+<p><code>R828D</code> を認識、<code>RTL-SDR Blog V4 Detected</code> も出て、<strong>サンプルロス0</strong>。文句なし。母艦の準備はこれで完了。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">次回</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>ワンセグの周波数で IQ（複素サンプル）を録って、<strong>OFDM 同期</strong>から手を付ける。ガードインターバル（CP）の自己相関でシンボル境界と周波数オフセットを拾う、OFDM の定番処理だ。ここが復調器の土台になる。</p>
+<!-- /wp:paragraph -->

@@ -1,0 +1,130 @@
+<!-- wp:paragraph -->
+<p><a href="https://yasu-home.com/isdbt-1seg-ofdm-sync-lock/">#1</a> で ② OFDM同期が関西テレビの生電波にロックした。今回は約束どおり、その続きの <strong>③ チャネル等化</strong>を実装して、ついに<strong>ワンセグのコンスタレーションを描く</strong>。「パイロットで割るだけでしょ？」と思っていたら、1セグ特有の罠が一つと、<strong>自分の答え合わせを電波自身にさせる</strong>気持ちのいい瞬間があった。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">なぜ「等化」が要るのか</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>OFDMは1024本のキャリアに別々のデータ（ワンセグはQPSK）を載せて飛ばす。ところが電波は途中で、マルチパス（反射）・アンテナ・受信機のフィルタという<strong>チャネル <code>H(f)</code></strong> を通って、キャリアごとに<strong>振幅と位相がてんでバラバラに回されて</strong>届く。受信したものは <code>Y = H·X</code>。送った点 <code>X</code> を取り戻すには <code>H</code> を測って割る、<code>X = Y/H</code> ── これが等化。問題は「<code>H</code> をどうやって測るか」だ。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">スキャッタードパイロット ── 送信側が撒いてくれた基準点</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>ありがたいことに、ISDB-Tは<strong>値が既知のキャリア（パイロット）</strong>を一定間隔で埋め込んでくれている。中でも <strong>スキャッタードパイロット（SP）</strong>は<strong>12本ごと</strong>に立ち、しかもシンボルごとに<strong>3本ずつ横にズレて</strong>、4シンボルで全キャリアを舐めていく。値は擬似乱数列 PRBS で <code>±</code> にBPSK変調され、通常データより <strong>4/3倍ブースト</strong>されている。SPの位置では「受信値 <code>Y</code>」と「送られたはずの値」が両方分かるので、<code>H = Y / パイロット</code> でチャネルを<strong>直接</strong>測れる。あとは測れた点の<strong>間を補間</strong>すればいい。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>そのPRBS（参照実装 gr-isdbt と ARIB STD-B31 で同一）はこれ。11段のシフトレジスタを全1で初期化して回すだけ：</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>reg = 0b111_1111_1111            // 11ビット全1で初期化
+w   = reg & 1                    // 出力はLSB
+new = (reg>>2) ^ (reg>>0) & 1    // 帰還 X¹¹+X²+1
+reg = (reg>>1) | (new<<10)       // 右シフトして頭に戻す
+pilot = (8/3)*(0.5 - w)          // w=0→ +4/3,  w=1→ -4/3</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">罠①：その1セグ、全帯域のどこに座ってる？</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>ここが1セグ自作の落とし穴だった。PRBSは<strong>全帯域（13セグメント・5617キャリア）を通しで連番</strong>に振った番号で進む。つまり各SPの符号（<code>+</code>か<code>-</code>か）は、その<strong>絶対キャリア番号</strong>で決まる。ところが僕らが録っているのは<strong>真ん中の1セグメント（432本）だけ</strong>。この432本が全帯域の<strong>何番目から始まるか</strong>を知らないと、PRBSの符号が丸ごとズレて、チャネル推定が全滅する。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>答え：部分受信（ワンセグ）に使われるのは<strong>論理セグメント0</strong>で、これは周波数軸で<strong>ちょうど真ん中</strong>＝13セグメントの7番目に置かれる。だから絶対キャリア番号 <strong>2592（＝6×432）から</strong>の432本。しかも <code>2592 = 216×12</code> と<strong>12の倍数</strong>なので、「12本ごと」というSPの周期パターンはセグメント内のローカル番号でもそのまま成立する。地味な事実だが、ここを1本外すと何も復調できない、文字どおりの<strong>急所</strong>だった。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">やることは、3行</h2>
+<!-- /wp:heading -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>① H[l] = Y[l] / パイロット[l]      // SPの位置でチャネルを直接測る
+② SP（12本間隔）の間を線形補間     // 端は傾きで外挿
+③ X[l] = Y[l] / H[l]               // 全キャリアを割って等化</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">検算：合ってるか、電波自身に言わせる</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>今回いちばん面白かったのがここ。仮説は積み重なっている ── ②の同期、セグメントの切り出し位置、PRBSオフセット2592、各シンボルの <code>symbol%4</code>。<strong>このどれか一つでも狂っていれば全部おかしくなる</strong>。どう確かめる？</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>物理的に、チャネル <code>H(f)</code> は周波数方向に<strong>滑らか</strong>なはずだ（隣のキャリアで急に位相は飛ばない）。ということは、隣り合うSPで測った <code>H</code> は<strong>近い値</strong>になるはず。これを「<strong>隣接SPコヒーレンス</strong>」（0〜1、1で完全に揃う）で測る。もし仮説がどこか狂っていれば、PRBSの符号がランダムに化けて <code>H</code> はただのノイズになり、コヒーレンスは<strong>床</strong>に落ちる。つまりこの一つの数字が、積み重ねた仮説<strong>全体</strong>の答え合わせになる。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>まず「セグメントをFFTのどのbinから切り出すか」をスキャンしてみた：</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:image {"id":194,"sizeSlug":"large","linkDestination":"none"} -->
+<figure class="wp-block-image size-large"><img src="https://yasu-home.com/wp-content/uploads/2026/06/02-bin-coherence-scan-1024x523.png" alt="bin整列スキャン。bin296だけが隣接SPコヒーレンス0.82で突き抜け、他は0.28前後の床に並ぶ棒グラフ" class="wp-image-194"/><figcaption class="wp-block-image__caption">セグメント切り出し位置 vs 隣接SPコヒーレンス。<strong>理論値 (1024−432)/2 = 296 が、コヒーレンス0.82で一本だけ突き抜けた</strong>。他は全部ノイズ床（〜0.28）。規格から計算した位置に、電波が「そこだ」と答えた瞬間。</figcaption></figure>
+<!-- /wp:image -->
+
+<!-- wp:paragraph -->
+<p>さらにSPはシンボルごとに3本ズレる＝各シンボルの <code>symbol%4</code> は <strong>1ずつ増える</strong>はず。各シンボルについて独立に <code>symbol%4</code> を当てさせたら、きれいに <strong>0,1,2,3,0,1,2,3…</strong> と並んだ。同期もセグメント抽出もPRBSオフセットも、全部正しい、という強い裏取りだ。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>=== bin整列スキャン（正しい位置だけ立つ）===
+  bin 295 : 0.267
+  bin 296 : 0.816   ★ = (1024-432)/2、理論どおり圧勝
+  bin 297 : 0.304
+
+=== symbol%4 位相（各シンボル独立に検出）===
+  sym0:0  sym1:1  sym2:2  sym3:3
+  sym4:0  sym5:1  sym6:2  sym7:3   → +1/シンボルで整合 ✓
+
+平均SPコヒーレンス（512シンボル）: 0.839</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">ワンセグのQPSKが、見えた</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>確定した整列で全512シンボルを等化し、データキャリアを1枚の散布図に重ねた。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:image {"id":195,"sizeSlug":"large","linkDestination":"none"} -->
+<figure class="wp-block-image size-large"><img src="https://yasu-home.com/wp-content/uploads/2026/06/02-equalized-qpsk-1024x488.png" alt="等化後コンスタレーション。左は全シンボルでぼやけた塊、右は良C/Nシンボルのみで4つのQPSKローブが理想点に分離" class="wp-image-195"/><figcaption class="wp-block-image__caption">等化後のコンスタレーション（ch17カンテレ・V4・弱アンテナ）。<strong>左＝全シンボル</strong>はぼやけた塊だが中心に4つの山。<strong>右＝C/Nの良いシンボルだけ</strong>選ぶと、<strong>4つのQPSK点（シアンの＋）にくっきり分離</strong>する。</figcaption></figure>
+<!-- /wp:image -->
+
+<!-- wp:paragraph -->
+<p>4象限がきれいに均衡している ── <strong>QPSK</strong>だ。ワンセグはモバイル前提で一番頑丈なQPSKを使うので、これは期待どおり。点の雲が4つに割れて見えた瞬間、「電波からビットの一歩手前まで来た」という実感があった。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">ボケの正体はバグじゃない、C/Nだ</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>正直、最初にこの太いクラスタを見たときは等化のバグを疑った。が、<strong>コヒーレンスが高い（＝瞬間的にC/Nが良い）シンボルだけ</strong>選り分けて描き直すと（上の右図）、4つのQPSK点が理想位置にスッと締まる。つまり<strong>等化は正しく動いていて、残るボケは純粋に信号対雑音比＝弱いアンテナのせい</strong>。#1のUHFスキャンで床+11dBしか無かったのを思い出す。EVMは全シンボルで132%、良シンボルだけなら98%。まだ高い。<strong>ボトルネックは完全にアンテナ</strong>だ。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">いまの到達点</h2>
+<!-- /wp:heading -->
+
+<!-- wp:list -->
+<ul class="wp-block-list"><li>① RF入力（rtl_sdr の生IQ）… 済</li><li>② OFDM同期（CP自己相関＋周期性GI判定）… 実電波でロック確認</li><li>③ <strong>チャネル等化</strong>（スキャッタードパイロット）… <strong>実電波でQPSK確認</strong></li><li>④ デマップ＋デインターリーブ（要TMCC）／⑤ FEC ／⑥ TS … この先</li></ul>
+<!-- /wp:list -->
+
+<!-- wp:paragraph -->
+<p>教訓：パイロット等化は「割るだけ」だが、<strong>割る基準（PRBSの絶対位相）を1ビット間違えると全滅</strong>する。そして正しさは規格表をにらむだけでなく、<strong>電波自身に検算させられる</strong> ── コヒーレンスという一つの数字が、積み上げた仮説を一発で裏取りしてくれた。これが効いた。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>次回 #3 は、QPSKの「点の雲」から<strong>ビットを取り出す</strong>側へ。そのためにまず ④ <strong>TMCC</strong>（伝送制御情報）を読んで、変調方式と畳み込み符号化率を電波から知り、デインターリーブにかける。…のだが、その前に<strong>壁のTVアンテナ端子（F→SMA変換）</strong>に挿してC/Nを稼ぐのが先かもしれない。EVM 98%のままでは、この先の誤り訂正が苦しいからだ。次はそのどちらかから。</p>
+<!-- /wp:paragraph -->

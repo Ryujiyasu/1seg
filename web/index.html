@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>自作ワンセグ復調器 — ブラウザ版（WASM + WebUSB）</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; }
+  h1 { font-size: 1.4rem; }
+  video, canvas#cv { width: 100%; max-width: 480px; background: #000; border-radius: 8px; display: block; margin: 1rem 0; }
+  canvas#cv { display: none; image-rendering: auto; }
+  button { font-size: 1rem; padding: .5rem 1rem; margin: .25rem .25rem .25rem 0; border-radius: 6px; cursor: pointer; }
+  .row { margin: 1rem 0; }
+  #log { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: .85rem;
+         background: #8881; padding: .75rem; border-radius: 6px; max-height: 220px; overflow: auto; }
+  .muted { color: #888; font-size: .9rem; }
+  code { background: #8882; padding: 0 .25rem; border-radius: 3px; }
+</style>
+</head>
+<body>
+  <h1>📺 自作ワンセグ（ISDB-T 1seg）復調器 — ブラウザ版</h1>
+  <p class="muted">IQサンプルを WebAssembly の復調器（Rust製）で MPEG-TS に復号し、その場で再生します。
+    ①同期→②等化→③TMCC→④デインタ→⑤Viterbi+RS→⑥逆拡散 まで全部ブラウザ内で走ります。</p>
+
+  <div class="row">
+    <strong>① ファイルから（確実）</strong>：rtl_sdr の生IQ（u8, fs=1015873）を選ぶと復号→再生。<br />
+    <input type="file" id="file" accept=".iq,.bin,application/octet-stream" />
+  </div>
+
+  <div class="row">
+    <strong>② ライブ（WebUSB, 実験）</strong>：RTL-SDR を直結して生放送を復号。<br />
+    <button id="usb">RTL-SDR に接続してライブ復号</button>
+    <span class="muted">※ Chrome/Edge + HTTPS か localhost。実機必須。</span>
+  </div>
+
+  <video id="video" controls autoplay muted playsinline></video>
+  <canvas id="cv" width="320" height="180"></canvas>
+  <div class="row">
+    <button id="dl" disabled>復号したTSをダウンロード</button>
+    <span class="muted">（再生がうまくいかない環境でも VLC/ffplay で確認できます）</span>
+  </div>
+
+  <div id="log"></div>
+
+  <!-- MPEG-TS を MSE で再生（H.264+AAC） -->
+  <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.js"></script>
+  <script type="module" src="./main.js?v=12"></script>
+</body>
+</html>

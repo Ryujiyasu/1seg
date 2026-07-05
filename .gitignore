@@ -1,0 +1,20 @@
+# Rust
+/target
+Cargo.lock        # ライブラリworkspaceのため当面は無視（バイナリ確定時に解除）
+
+# 参照実装の浅clone（容量大／別リポジトリ）
+/ref
+
+# IQキャプチャ（巨大）
+*.iq
+*.cu8
+*.bin
+*.raw
+
+# WASM/web 生成物
+web/pkg/
+crates/isdbt-wasm/pkg*/
+node_modules/
+
+# ルート直下のスマホ写真（プロジェクト外）
+/IMG_1643.jpg

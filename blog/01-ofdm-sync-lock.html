@@ -1,0 +1,137 @@
+<!-- wp:paragraph -->
+<p><a href="https://yasu-home.com/rtl-sdr-v4-ubuntu-2604-setup/">#0</a> で RTL-SDR Blog V4 を母艦で動かすところまで来た。今回からいよいよ信号処理。復調器の最初の段、<strong>② OFDM同期</strong>を実装して、<strong>大阪の地デジ（関西テレビ）の生電波に実際にロックさせる</strong>ところまでやる。…のだが、途中で <code>GI=1/32</code> という<strong>もっともらしい嘘</strong>を一度つかまされた。その誤診と修正までが今回の本題。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">② OFDM同期 ＝ ガードインターバルの自己相関</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>OFDMは、各シンボルの頭に<strong>ガードインターバル（GI / サイクリックプレフィックス, CP）</strong>を付ける。これは「有効シンボルの末尾Lサンプルをそのまま頭にコピーしたもの」だ。つまり受信列 <code>r</code> の中で、<strong>Nサンプル（有効シンボル長）離れた2点は、CP区間でそっくり相関する</strong>。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>これを使うのが van de Beek らの最尤推定。各開始位置 d について、</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>γ(d) = Σ_{k=0..L-1}  r[d+k]·conj(r[d+k+N])     ← CP区間の相関
+Φ(d) = Σ_{k=0..L-1}  (|r[d+k]|² + |r[d+k+N]|²)/2
+M(d) = |γ(d)| / Φ(d)                           ← 0..1、1で完全相関</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:paragraph -->
+<p>を計算し、<code>M(d)</code> が最大の d を<strong>シンボル境界</strong>とする。さらにそのときの位相から、<strong>小数キャリア周波数オフセット（CFO）</strong>が <code>ε = -arg(γ) / 2π</code>（キャリア間隔単位、±0.5）で同時に求まる。1パスのスライディング窓で全位置を O(N) で舐められる。これを Rust で書いた。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">まず合成信号で土台を固める</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>実電波を録る前に、<strong>答えが分かっている合成OFDM</strong>で検証する。QPSK×1024キャリア＋CPを生成し、わざと既知のCFO（0.17副搬送波）と前置きオフセットとノイズを混ぜ、同期が「境界を±2サンプルで当てる／CFOを復元する」かをテストにした。実IQが無くても土台を固められるのがいい。ここが緑になってから次へ進む。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">実電波を録る ── アンテナが弱くて最大ゲインが要った</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>住んでいるのは堺市。送信所は生駒山。まず <code>rtl_power</code> で大阪のUHF帯をスイープして、どの局が拾えているか確かめた。最初は普通のゲインで回したら<strong>ほぼノイズ床で何も見えない</strong>。アンテナがOTA信号をほとんど拾えていない。ゲインを最大（49.6dB）に上げて再スイープすると、ようやく出た：</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>強い順 TOP:
+  ch17 497.143MHz  床比+11.5dB   ← 関西テレビ（カンテレ）
+  ch16 491.143MHz  床比+10.1dB   ← 毎日放送（MBS）
+  ch18 503.143MHz  床比 +4.6dB
+  ...</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:image {"id":192,"sizeSlug":"large","linkDestination":"none"} -->
+<figure class="wp-block-image size-large"><img src="https://yasu-home.com/wp-content/uploads/2026/06/01-osaka-uhf-scan-1024x430.png" alt="大阪UHF帯スキャン。ch16 MBS と ch17 カンテレが床から立っている" class="wp-image-192"/><figcaption class="wp-block-image__caption">大阪UHF帯スキャン（V4・最大ゲイン）。黄色帯の <strong>ch16 MBS / ch17 カンテレ</strong> が床から約10dB立っている。最大ゲインでようやくこれ＝アンテナは弱め。</figcaption></figure>
+<!-- /wp:image -->
+
+<!-- wp:paragraph -->
+<p>ch17（カンテレ）が一番強い。床+11dB は強くはないが、ワンセグはもともとモバイル前提で頑丈な変調なので十分いける。中心周波数 <code>497142857 Hz</code> を、サンプルレート <code>1015873 Hz</code> で12秒キャプチャした。このヘンなレートには理由がある：フルセグの基準 <code>fIFFT = 512/63 MHz</code> の <strong>1/8</strong> がちょうどこの値で、これにすると 1seg Mode3 の有効シンボル長が<strong>きっかり1024サンプル（整数）</strong>になる。半端なレートで録ると <code>r[j]</code> と <code>r[j+N]</code> の N がズレてCP相関が鈍る。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>timeout 13 rtl_sdr -f 497142857 -s 1015873 -g 49.6 cap.iq</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">コケた ── 「GI=1/32」というもっともらしい嘘</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>録ったIQを同期にかけたら、強烈なピーク（metric 0.957）が立った。<strong>ロックはした</strong>。が、推定されたGIが <code>1/32</code> と出た。日本の地デジ（ISDB-T Mode3）は普通 <strong>GI=1/8</strong> のはず。おかしい。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>裏を取るために「検出した周期 <code>N+L</code> ごとに、本当にピークが繰り返し立っているか」を見たら ── 隣のシンボル位置のメトリクスが低い。<strong>周期的に立っていない＝その周期は偽物</strong>。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>原因は判定ロジックだった。正規化メトリクス <code>|γ|/Φ</code> は、<strong>本物のCPより短いLで窓を取っても 1 付近に張り付く</strong>。だから「単発のメトリクスが最大のGIを選ぶ」とやると、たまたま尖った<strong>最短のGI（1/32）に引っ張られる</strong>。1点のピークの高さでGIを決めてはいけなかった。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">直した ── 周期性でGIを選ぶ</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>正しい指標は「<strong>そのGIを仮定したとき、CPが周期 <code>N+L</code> ごとに繰り返し立っているか</strong>」だ。各GI候補についてメトリクス曲線を作り、<strong>周期 N+L で折り畳んで位相平均</strong>を取る。本物のGIなら真の境界位相で平均くしが高く尖り、偽のGIなら全位相で平坦になる。そのくしの高さ（周期性スコア）でGIを選ぶ。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>書き直して同じIQにかけた結果がこれ：</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>=== GI周期性スコア（高いほど本物）===
+  G1_4   (sym=1280) score=0.130 #####
+  G1_8   (sym=1152) score=0.671 ##########################   ★
+  G1_16  (sym=1088) score=0.196 #######
+  G1_32  (sym=1056) score=0.269 ##########
+
+=== ② OFDM同期 結果 ===
+GI推定        : G1_8
+symbol_start  : 258576
+metric(0..1)  : 0.910
+小数CFO       : -0.0540 副搬送波 = -53.5 Hz
+
+周期性チェック（sym長 = 1152）:
+  d= 256272 (#-2) M=0.905 ####################################
+  d= 258576 (#+0) M=0.910 ####################################
+  d= 260880 (#+2) M=0.657 ##########################
+✅ CP相関ロック</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:paragraph -->
+<p><strong>GI=1/8 がスコア0.671で圧勝</strong>。今度は周期1152ごとにちゃんとピークが立っている。そして 1/8 は<strong>日本のISDB-T Mode3の仕様どおり</strong>。規格表を見て「1/8のはず」ではなく、<strong>生電波から自力で1/8を当てられた</strong>のが気持ちいい。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:image {"id":191,"sizeSlug":"large","linkDestination":"none"} -->
+<figure class="wp-block-image size-large"><img src="https://yasu-home.com/wp-content/uploads/2026/06/01-cp-correlation-lock-1024x430.png" alt="CP自己相関メトリクスが1152サンプル周期でピークを刻み、OFDM同期がロックした図" class="wp-image-191"/><figcaption class="wp-block-image__caption">CP自己相関メトリクス M(d)。<strong>シンボル周期 1152 サンプルごとに山が周期的に立つ</strong>＝OFDM同期がロックした証拠（赤破線が N+L 間隔）。実電波・関西テレビ ch17。</figcaption></figure>
+<!-- /wp:image -->
+
+<!-- wp:paragraph -->
+<p>おまけに小数CFOは <strong>−53.5Hz</strong> しかなかった。V4は <code>TCXO</code>（温度補償水晶）を積んでいるので、周波数ずれが極小。スペック表の「Bias-T / TCXO / HF」のチェックが、こういうところで効いてくる。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">いまの到達点</h2>
+<!-- /wp:heading -->
+
+<!-- wp:list -->
+<ul class="wp-block-list"><li>① RF入力（rtl_sdr の生IQ → 複素サンプル）… 済</li><li>② <strong>OFDM同期</strong>（CP自己相関＋周期性GI判定）… <strong>実電波でロック確認</strong></li><li>③ チャネル等化（スキャッタードパイロット）… 次回</li><li>④ デマップ＋デインターリーブ（要TMCC）／⑤ FEC ／⑥ TS … この先</li></ul>
+<!-- /wp:list -->
+
+<!-- wp:paragraph -->
+<p>教訓：<strong>「ロックした」と「正しくロックした」は別物</strong>。ピークが立っても、それが周期的に繰り返しているかまで見ないと、もっともらしい嘘に足をすくわれる。合成信号でのテスト＋実電波での周期性チェック、この二段構えがあって初めて信用できる。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>次回 #2 は、ロックした <code>symbol_start</code> から1シンボルぶんFFTして、<strong>コンスタレーションを描く</strong>。点がちゃんと固まって見えたら、③チャネル等化の入口だ。</p>
+<!-- /wp:paragraph -->

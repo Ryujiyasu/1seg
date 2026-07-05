@@ -1,0 +1,101 @@
+<!-- wp:paragraph -->
+<p><a href="https://yasu-home.com/isdbt-1seg-tmcc-and-cn-wall/">#3</a> は、<strong>C/Nの壁</strong>に阻まれて終わった。FECは雑音床を超えられず、誤り訂正が効かない ── 較正でそれを証明したところまでだった。今回はその壁を<strong>物理で殴って越え</strong>、そこから <strong>RS復号・エネルギー逆拡散</strong>まで一気に解いて、ついに ── <strong>自作の復調器で、実際のテレビが映った</strong>。IQサンプルから、フルスクラッチのRustコードだけで、生の地デジ電波が動く映像になるまでの最終回。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">壁を殴る ── 付属アンテナから、壁のTV端子へ</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>#3までは付属のロッドアンテナ。床から+11dBしか出ず、EVMは98%。ここが全ての元凶だった。そこで <strong>壁のTVアンテナ端子</strong>に、F型→SMAの変換をかませて直結した。信号が強いので、逆にゲインは最大49.6ではなく<strong>30に下げる</strong>（強すぎるとADCが飽和して崩れる）。録り直して同じ処理を流すと、数字が一変した：</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>            付属アンテナ      壁アンテナ
+SPコヒーレンス   0.84       →   1.000
+EVM             98%        →   16.3%
+FEC一致率        0.894      →   1.00000   ← 誤り0でロック</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:paragraph -->
+<p>Viterbiが<strong>完璧にロック</strong>した。#3の較正で「雑音床0.928を超えない」と突き止めた、まさにその壁を越えた瞬間だ。ビットはもう1つも間違っていない。あとは、この綺麗なビット列を<strong>TSパケットに組み直す</strong>だけ ── のはずだった。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">TSパケットの影 ── 0x47は出た、でも中身が読めない</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>Viterbiの出力をバイトに詰め、Forneyのバイトデインターリーブをかけると、<strong>MPEG-TSの同期バイト 0x47 が、204バイトごとに命中率100%</strong>で立った。TSパケットの骨格は確かに出た。ところが、パケットの中身（ペイロード）を<strong>リードソロモン(204,188)</strong>にかけると、<strong>1ブロックも符号語にならない</strong>。ビットは完璧なのに、だ。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>ここで危うく「同期は出た」で満足しかけた。だが罠がある：Forneyインターリーバは<strong>同期バイトを遅延0の枝に通す</strong>ので、<strong>0x47は何もしなくても204周期で生き残る</strong>。つまり <code>0x47</code> が並んでも、ペイロードが正しく組み直せている保証にはならない。合成データで自分のインタ↔デインタが逆変換になることは確認済み。なのに実データが通らない。丸一日、ここで唸った。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">二つの取り違え ── 順序と、周期</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>詰まったら参照実装（gr-isdbt）のブロック接続を睨む。すると受信の並びが <code>byte-deint → エネルギー<strong>逆拡散</strong> → RS</code> になっている。DVBは「スクランブル→RS」だが、<strong>ISDB-Tは順序が逆で、RSの<strong>後</strong>に全体をスクランブルしている</strong>。だから受信側は<strong>RSより先に逆拡散</strong>しないと符号語に戻らない。僕はRSを先にかけていた。順序を直すと ── まだ13%。惜しい、でも足りない。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>13%の内訳を<strong>直接ダンプ</strong>して眺めた。すると成功ブロックが<strong>8個だけ連続</strong>して、あとは崩れている。これは「PRBSのリセット周期が、僕の思っている8ブロックではない」というサインだ。周期を8に決め打ちしていたのを、<strong>広く総当たり</strong>にした。そして周期を64付近にした瞬間 ── パターンが <code>...........########################</code> と<strong>延々と成功に変わった</strong>。決め手は、成功ブロックの<strong>PIDを表示</strong>したこと：</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>成功ブロックのPID:
+  0x1fff  ← ヌルパケット（TSの定番パディング）
+  0x0151 0x0152 0x0150  ← 1セグのサービス（映像・音声・PCR）
+  0x0001 0x0010 0x0024  ← PSI/SI（番組情報テーブル）
+RS復号成功率: 99.7%（3271/3282 パケット）</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:paragraph -->
+<p><code>0x1fff</code> と <code>0x0151</code> が並んだ瞬間、鳥肌が立った。これは<strong>まぎれもない、本物のMPEG-TS</strong>だ。ランダムなノイズからは絶対に出ない、放送の構造そのもの。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">そして、テレビが映った</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>出来上がった <code>.ts</code> を <code>ffprobe</code> に食わせる：</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>Input: MPEG-TS (MPEG-2 Transport Stream), 3 streams
+  Stream #0: Audio: aac, 48000 Hz, stereo
+  Stream #1: Video: h264, 320x180        ← ワンセグ解像度そのもの
+  Stream #2: (データ/字幕)</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:paragraph -->
+<p><strong>H.264の映像 320×180 と、AACの音声</strong>。ワンセグの規格そのものだ。最後に <code>ffmpeg</code> で1フレーム抜き出す。IQサンプルから、②同期→③等化→④TMCC・デインターリーブ→⑤Viterbi＋RS→⑥逆拡散、その全部を自分で書いたコードだけを通り抜けてきた、生の地デジ電波の、その画がこれ：</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:image {"id":200,"sizeSlug":"full","linkDestination":"none"} -->
+<figure class="wp-block-image size-full"><img src="https://yasu-home.com/wp-content/uploads/2026/07/04-decoded-frame.png" alt="自作ワンセグ復調器で実電波から復号したテレビ映像。関西テレビの朝の番組、時計は9:39、値下げのテロップ" class="wp-image-200"/><figcaption class="wp-block-image__caption">自作復調器が実電波から取り出した1フレーム（関西テレビ・ch17）。時計「9:39」、テロップ「値上げラッシュの中…"応援値下げ"続々登場」。<strong>IQ → 自作コード → 映像</strong>。320×180のH.264が、確かにデコードできている。</figcaption></figure>
+<!-- /wp:image -->
+
+<!-- wp:paragraph -->
+<p>映った。<strong>本当に、テレビが映った。</strong> u8のIQバイト列でしかなかったものが、OFDMのシンボルになり、QPSKの点になり、ビットになり、パケットになり、H.264になって、人の顔と、時計と、テロップになった。全部、この手で書いたRustのコードの中で起きたことだ。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">完成 ── ①から⑥まで</h2>
+<!-- /wp:heading -->
+
+<!-- wp:list -->
+<ul class="wp-block-list"><li>① RF入力（rtl_sdr 生IQ）… ✅</li><li>② OFDM同期（CP自己相関）… ✅</li><li>③ チャネル等化（スキャッタードパイロット）… ✅ QPSK</li><li>④ TMCC復号＋周波数/時間/ビットデインターリーブ＋QPSKデマップ … ✅</li><li>⑤ FEC（Viterbi 2/3 ＋ RS(204,188)）… ✅</li><li>⑥ エネルギー逆拡散 → <strong>MPEG-TS出力</strong> … ✅ <strong>H.264 320×180 が再生できた</strong></li></ul>
+<!-- /wp:list -->
+
+<!-- wp:paragraph -->
+<p>振り返ると、この最終回で効いたのは全部「<strong>数字を疑い、直接見る</strong>」だった。「0x47が出た」で止まらず、ペイロードをRSで検算する。「13%」で諦めず、成功パターンを可視化して周期のズレに気づく。<strong>PIDを表示した瞬間に勝ちが見えた</strong>。#1の「ロックした≠正しくロックした」から始まったこの姿勢が、最後まで通用した。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>ワンセグは無スクランブル。だから復調に成功すれば、こうして本当に映る。GNU Radioに頼らない、現代のRust実装 ── 調べた限り誰もやっていなかったこの一台が、いま実電波で動いている。次は WASM＋WebUSB でブラウザに載せて、<strong>「URLを開くとテレビが映る」</strong>ところまで持っていきたい。……が、それはまた別の話。まずは、映った。それで十分だ。</p>
+<!-- /wp:paragraph -->

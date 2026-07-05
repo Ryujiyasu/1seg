@@ -1,0 +1,9 @@
+# ISDB-T 1セグ 自作復調器 — Rust ワークスペース
+# 段構成: ②OFDM同期 → ③等化 → ④demap/deinterleave → ⑤FEC → ⑥TS
+[workspace]
+resolver = "2"
+members = ["crates/isdbt-dsp", "crates/isdbt-wasm"]
+
+[workspace.package]
+edition = "2021"
+license = "GPL-3.0-or-later"  # gr-isdbt/gr-dvbt(GPL) を参照実装にするため

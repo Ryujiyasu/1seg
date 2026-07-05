@@ -1,0 +1,100 @@
+<!-- wp:paragraph -->
+<p><a href="https://yasu-home.com/isdbt-1seg-channel-equalization-qpsk/">#2</a> で ③チャネル等化が通り、関西テレビのワンセグから <strong>QPSKのコンスタレーション</strong>が見えた。今回はその先 ── まず <strong>④ TMCC</strong> を読んで<strong>放送局の設定そのものを電波から取り出し</strong>、続いて ⑤ の誤り訂正（Viterbi）まで一気に組んだ。…のだが、最後に<strong>壁にぶつかった</strong>。そして「これはバグか、それとも信号が弱いだけか？」を<strong>較正で白黒つけた</strong>話までが今回の本題。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">TMCC ── 電波に「あなたの設定は？」と聞く</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>ISDB-Tには <strong>TMCC</strong>（Transmission and Multiplexing Configuration Control）という制御チャネルがある。各階層の<strong>変調方式・符号化率・時間インターリーブ長・セグメント数</strong>を、専用キャリアで常時知らせてくれる。この先のデインターリーブもFECも、TMCCを読まないと始まらない。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>TMCCキャリアは<strong>差動BPSK（DBPSK）</strong>で、隣り合うOFDMシンボル間の<strong>位相が同じなら0、反転なら1</strong>を運ぶ。1セグの中央セグメントには4本のTMCCキャリアがあり、全部が同じ語を冗長に送るので多数決で読む。そして <strong>204シンボルで1フレーム</strong>。フレーム先頭には16ビットの同期語があり、フレームごとに偶奇で反転する。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>問題は「204シンボルのどこがフレームの頭か」。これも #1 のGI判定や #2 のセグメント探しと同じノリで、<strong>204通りの位相を総当たりして同期語の一致率を見る</strong>。正しい位相だけが立つはずだ：</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:image {"id":197,"sizeSlug":"large","linkDestination":"none"} -->
+<figure class="wp-block-image size-large"><img src="https://yasu-home.com/wp-content/uploads/2026/06/03-tmcc-frame-scan-1024x478.png" alt="TMCCフレーム位相スキャン。位相111だけが同期語一致99.5%で突出し、他は60%前後" class="wp-image-197"/><figcaption class="wp-block-image__caption">TMCCフレーム位相スキャン。<strong>204位相のうち phase 111 だけが同期語一致99.5%で突き抜けた</strong>。他は60%前後の雑音。フレームの頭が一発で決まった瞬間。</figcaption></figure>
+<!-- /wp:image -->
+
+<!-- wp:paragraph -->
+<p><strong>phase 111 が同期語一致99.5%で圧勝</strong>。さらに各フレームの偶奇が <code>E,O,E,O,…</code> と12フレームきれいに交互だった。これで「正しくフレームに乗った」と断言できる。あとは情報ビットをフレーム間で多数決して読むだけ。出てきた中身がこれ：</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>=== TMCC 伝送パラメータ（実電波 ch17 カンテレ）===
+部分受信フラグ : 1   ← ワンセグ放送中
+Layer A(1seg)  : QPSK   / 符号化率 2/3 / 時間IL=4 / 1セグ
+Layer B(HDTV)  : 64QAM  / 符号化率 3/4 / 時間IL=2 / 12セグ
+Layer C        : 未使用
+                          （1 + 12 = 13セグメント ✓）</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:paragraph -->
+<p>これは日本の地デジの<strong>教科書どおりの設定そのもの</strong>だ。ワンセグ（Layer A）はモバイル前提で頑丈な <strong>QPSK・2/3</strong>、固定向けHDTV（Layer B）は情報量を稼ぐ <strong>64QAM・3/4</strong> の12セグ。しかも <strong>Layer A = QPSK</strong> という記述は、#2 で僕が等化して見た QPSKコンスタレーションを<strong>電波自身が independently 裏付けてくれた</strong>ことになる。規格表を見て「QPSKのはず」ではなく、<strong>電波に設定を喋らせた</strong>。これは効いた。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">デインターリーブ → Viterbi まで組む</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>TMCCで設定（QPSK・2/3・I=4）が分かったので、受信チェーンの残りを一気に書いた。<strong>周波数デインターリーブ</strong>（1セグでは384キャリアのランダム置換に簡約される）、<strong>時間デインターリーブ</strong>（キャリアごとに最大380シンボルのFIFO遅延線）、<strong>QPSKデマップ</strong>、<strong>ビットデインターリーブ</strong>、そして ⑤ の <strong>Viterbi復号</strong>（K=7・母符号1/2をレート2/3にデパンクチャ）。Viterbiは合成テストで「無雑音で完全復元」「符号ビット3%の誤りを訂正」まで確認した。<strong>部品は全部そろって、実電波で端から端まで完走した</strong>。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>…が、ここで素朴な疑問が立つ。<strong>出てきたビット列は、本当に正しく復号できているのか？</strong> 符号ビットの並び順・パンクチャ位相には曖昧さがあって、間違っていれば当然ゴミが出る。でもゴミかどうか、どうやって見分ける？</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">壁 ── そして「バグか、信号か」を較正で割る</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>FECがロックしているかの素直な指標として、<strong>Viterbiの出力を再エンコードして受信ビットと一致率</strong>（≈ 1−誤り率）を測ることにした。曖昧さの全組み合わせ（ビット順×シフト×パンクチャ位相＝12通り）を総当たりして、正しい設定だけ一致率が跳ねれば勝ち ── TMCCの位相111のように。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>結果は <strong>12設定すべてが約0.89で横一線</strong>。どれも跳ねない。…これは怪しい。0.89は高いようにも見えるが、<strong>そもそもこの指標、ロックしていなくても高く出るのでは？</strong> Viterbiは入力が何であれ「一番それっぽい符号語」を必ず選ぶ。だから雑音でも一致率は高く出るはずだ。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>そこで<strong>較正</strong>した。完全な<strong>ランダム雑音</strong>（±1）を同じ指標に通すと、何が出るか。これがこの指標の「床」だ：</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:image {"id":198,"sizeSlug":"large","linkDestination":"none"} -->
+<figure class="wp-block-image size-large"><img src="https://yasu-home.com/wp-content/uploads/2026/06/03-fec-cn-wall-1024x523.png" alt="FEC 12設定の一致率はすべて約0.89で、純雑音の床0.928を誰も超えない棒グラフ" class="wp-image-198"/><figcaption class="wp-block-image__caption">FECロック探索。12設定すべて（灰）が約0.89で、<strong>純雑音の床（赤線・0.928）を誰一人超えない</strong>。本物のロックなら、TMCCの位相111のように<strong>1本だけ赤線を突き抜ける</strong>はず。それが無い＝畳み込み構造が出ていない。</figcaption></figure>
+<!-- /wp:image -->
+
+<!-- wp:paragraph -->
+<p><strong>純雑音の床が 0.928</strong>。そして<strong>実信号の最良は 0.894 ── 雑音より低い</strong>。つまりこの指標で見るかぎり、実電波には<strong>畳み込み符号の構造がまったく出ていない</strong>。FECは<strong>ロックしていない</strong>。バグではなく、信号が弱すぎる ── これが <strong>C/N（搬送波対雑音比）の壁</strong>だ。推測ではなく、<strong>較正で証明された壁</strong>。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>納得はいく。#1 のUHFスキャンで <strong>床+11dB</strong> しかなかった弱いアンテナだ。等化後のEVMは約98%。符号ビットの誤り率が1割を超えていて、K=7・2/3 の訂正能力（せいぜい数%）をはるかに超えている。この信号ではViterbiは原理的に勝てないし、その先のRS（リードソロモン）も100%失敗する。<strong>だから、ここでRSを実装するのは時間の無駄</strong>と判断した。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">いまの到達点</h2>
+<!-- /wp:heading -->
+
+<!-- wp:list -->
+<ul class="wp-block-list"><li>①RF入力 / ②OFDM同期 / ③チャネル等化 … 実電波で確認済み</li><li>④ <strong>TMCC復号</strong>（局の設定を読む）… <strong>実電波で確認済み</strong></li><li>④ 周波数/時間デインターリーブ・QPSKデマップ … 実装・合成検証済み</li><li>⑤ <strong>Viterbi</strong>（誤り訂正・内符号）… 実装・合成検証済み、<strong>ただし実電波ではC/N不足でロックせず</strong></li><li>⑤RS / ⑥TS出力 … この先（良い信号があれば）</li></ul>
+<!-- /wp:list -->
+
+<!-- wp:paragraph -->
+<p>教訓：<strong>「動かない」と「壁にぶつかった」は、ちゃんと区別して証明できる</strong>。再エンコード一致率という指標は、雑音でも0.93出る ── 単独では嘘をつく。だが<strong>雑音床と並べた瞬間、真実が見える</strong>。指標を出したら、まずその指標自身を較正する。これは #1 の「ロックした と 正しくロックした は別物」と同じ教訓の、もう一段深いやつだ。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>打開策ははっきりしている ── <strong>アンテナ</strong>だ。付属のロッドアンテナではなく、<strong>壁のTVアンテナ端子</strong>に F→SMA変換でつなげば、C/Nに余裕が出てEVMが下がる。そうすれば上の棒グラフのどれか1本が赤線を突き抜け、FEC設定が確定し、Viterbi → RS → そして<strong>本物のMPEG-TS</strong>（同期バイト 0x47 が188バイトごとに立つ）まで一気に行けるはずだ。コードはもう、その日を待つばかりになっている。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>次回 #4 は、その壁を超える回にしたい。良いアンテナで録り直して、自作の復調器が<strong>実電波からTSを取り出す</strong>瞬間を。</p>
+<!-- /wp:paragraph -->
